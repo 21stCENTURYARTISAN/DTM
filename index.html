@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Deep Techno Machine — Web</title>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;700;900&display=swap" rel="stylesheet">
 <style>
@@ -121,6 +123,23 @@ body::after { content:''; position:fixed; inset:0; pointer-events:none; z-index:
 ::-webkit-scrollbar { width:4px; height:4px; }
 ::-webkit-scrollbar-track { background:var(--bg); }
 ::-webkit-scrollbar-thumb { background:var(--border2); border-radius:2px; }
+
+/* iOS / Mobile overrides */
+@media (max-width: 768px) or (pointer: coarse) {
+  .btn { padding:10px 14px; font-size:13px; min-height:44px; }
+  #startBtn { min-height:44px; font-size:13px; }
+  .bpm-inp { font-size:20px; width:52px; }
+  .pf-cap { width:18px; height:10px; }
+  .pf-track-wrap { height:80px; }
+  .step-on { height:22px !important; }
+  .step-deg { height:18px !important; font-size:11px !important; }
+  .step-acc { height:14px !important; }
+  .step-cut { height:14px !important; }
+  .seq-row-lbl { font-size:10px !important; }
+  .main { -webkit-overflow-scrolling: touch; }
+  .mixer { -webkit-overflow-scrolling: touch; }
+  .sequencer { -webkit-overflow-scrolling: touch; }
+}
 </style>
 </head>
 <body>
@@ -262,8 +281,14 @@ let ctx = null;
 let masterGain, delayNode, delayFeedback, reverbNode, reverbGain, masterCompressor;
 
 async function startAudio() {
-  if (ctx) return;
+  if (ctx) {
+    // iOS sometimes suspends context - always try to resume
+    if (ctx.state === 'suspended') await ctx.resume();
+    return;
+  }
   ctx = new (window.AudioContext || window.webkitAudioContext)();
+  // iOS requires explicit resume inside a user gesture
+  if (ctx.state === 'suspended') await ctx.resume();
 
   // Master chain: compressor → gain → out
   masterCompressor = ctx.createDynamicsCompressor();
@@ -683,7 +708,12 @@ function triggerPad(time, freq, cutStep) {
     o.frequency.value = freq*f; o.detune.value=detuneFactors[i]; return o;
   });
   const panners = [-0.8,0.8,-0.5,0.5,-0.3,0.3].map(pan => {
-    const p = ctx.createStereoPanner(); p.pan.value=pan; return p;
+    try {
+      const p = ctx.createStereoPanner(); p.pan.value=pan; return p;
+    } catch(e) {
+      // iOS Safari fallback: use a gain node (no panning but no crash)
+      return ctx.createGain();
+    }
   });
   const mixG = ctx.createGain(); mixG.gain.value=0.18;
 
@@ -785,36 +815,37 @@ function scheduleNote(ch, step, time) {
   }
 }
 
-const LOOKAHEAD = 0.1;   // seconds ahead to schedule
-const SCHEDULE_INTERVAL = 25; // ms
+const LOOKAHEAD = 0.12;
+let rafId = null;
 
 function scheduler() {
   if (!playing || !ctx) return;
+  // iOS may suspend context between frames - kick it awake
+  if (ctx.state === 'suspended') ctx.resume();
   while (nextStepTime < ctx.currentTime + LOOKAHEAD) {
     const step = globalStep % seqLen;
     for (let ch = 0; ch < 8; ch++) scheduleNote(ch, step, nextStepTime);
-
-    // UI update (approximate — fires slightly after the beat)
     const uiStep = step;
     const uiTime = nextStepTime;
-    setTimeout(() => {
-      if (playing) updatePlayhead(uiStep);
-    }, Math.max(0, (uiTime - ctx.currentTime) * 1000));
-
+    setTimeout(() => { if (playing) updatePlayhead(uiStep); },
+      Math.max(0, (uiTime - ctx.currentTime) * 1000));
     nextStepTime += stepDuration();
     globalStep++;
   }
+  rafId = requestAnimationFrame(scheduler);
 }
 
 function startSeq() {
   if (!ctx) return;
   globalStep = 0;
   nextStepTime = ctx.currentTime + 0.05;
-  schedulerTimer = setInterval(scheduler, SCHEDULE_INTERVAL);
+  if (rafId) cancelAnimationFrame(rafId);
+  rafId = requestAnimationFrame(scheduler);
 }
 
 function stopSeq() {
-  if (schedulerTimer) { clearInterval(schedulerTimer); schedulerTimer=null; }
+  if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+  if (schedulerTimer) { clearInterval(schedulerTimer); schedulerTimer = null; }
   document.getElementById('playhead').style.display='none';
   stepNumEls.forEach(({el})=>el.classList.remove('active'));
   document.getElementById('footStep').textContent='--';
@@ -867,6 +898,8 @@ function sendMutate() {
 // ════════════════════════════════════════════════════════════════
 function togglePlay() {
   if (!ctx) { startAudio().then(togglePlay); return; }
+  // iOS: always try to resume on play tap
+  if (ctx.state === 'suspended') { ctx.resume().then(togglePlay); return; }
   playing = !playing;
   const btn = document.getElementById('btnPlay');
   btn.textContent = playing ? '■ STOP' : '▶ PLAY';
@@ -933,9 +966,14 @@ function buildMixer(){
       setVal(val);
 
       let dragging=false,startY=0,startVal=0;
+      // Mouse events
       cap.addEventListener('mousedown',e=>{dragging=true;startY=e.clientY;startVal=val;e.preventDefault();});
       document.addEventListener('mousemove',e=>{if(dragging)setVal(startVal+(startY-e.clientY)/trackH);});
       document.addEventListener('mouseup',()=>{dragging=false;});
+      // Touch events for iOS
+      cap.addEventListener('touchstart',e=>{dragging=true;startY=e.touches[0].clientY;startVal=val;e.preventDefault();},{passive:false});
+      document.addEventListener('touchmove',e=>{if(dragging){setVal(startVal+(startY-e.touches[0].clientY)/trackH);e.preventDefault();}},{passive:false});
+      document.addEventListener('touchend',()=>{dragging=false;});
       tw.addEventListener('wheel',e=>{e.preventDefault();setVal(val-e.deltaY*0.003);},{passive:false});
       cap.addEventListener('dblclick',()=>setVal((def-min)/(max-min)));
 
