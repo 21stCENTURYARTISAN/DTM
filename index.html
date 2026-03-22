@@ -355,11 +355,11 @@ function mkSeq(){
     on:  Array.from({length:8},()=>new Array(32).fill(0)),
     deg: Array.from({length:8},()=>new Array(32).fill(0)),
     acc: Array.from({length:8},()=>new Array(32).fill(0)),
-    cut: Array.from({length:8},()=>new Array(32).fill(32)),
+    cut: Array.from({length:8},()=>new Array(32).fill(0)),
   };
 }
 let seqState=mkSeq();
-const chLen=[16,16,16,32,16,32,32,32];
+const chLen=[16,16,16,16,16,16,16,16];
 const chStep=[0,0,0,0,0,0,0,0];
 let seqLen=32;
 
