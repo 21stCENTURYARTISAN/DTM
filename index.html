@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
-<title>DTM</title>
+<title>GUR-V1</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
@@ -195,7 +195,7 @@ html,body{width:100vw;height:100vh;overflow:hidden;background:var(--bg);
 
 <!-- HEADER -->
 <div class="hdr">
-  <div class="brand">DTM</div>
+  <div class="brand">GUR-V1</div>
   <button class="hb on"  id="initBtn" onclick="startAudio()">▸ INIT</button>
   <button class="hb"     id="playBtn" onclick="togglePlay()" disabled>▶ PLAY</button>
   <button class="hb"     id="recBtn"  onclick="toggleRec()">⏺ REC</button>
@@ -870,7 +870,7 @@ function encodeMP3(){
     const fl=mp3enc.flush();if(fl.length>0)mp3Data.push(new Int8Array(fl));
     const blob=new Blob(mp3Data,{type:'audio/mpeg'});
     const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-    a.download='DTM_'+Date.now()+'.mp3';a.click();URL.revokeObjectURL(a.href);
+    a.download='GUR-V1_'+Date.now()+'.mp3';a.click();URL.revokeObjectURL(a.href);
     setMsg('MP3 SAVED');
   }catch(e){setMsg('ENC ERROR');}
   recLeft=[];recRight=[];
@@ -1344,7 +1344,7 @@ function saveBank(){
   const data=JSON.stringify({bank,version:1},null,2);
   const blob=new Blob([data],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-  a.download='DTM_bank_'+Date.now()+'.json';a.click();URL.revokeObjectURL(a.href);
+  a.download='GUR-V1_bank_'+Date.now()+'.json';a.click();URL.revokeObjectURL(a.href);
   setMsg('BANK SAVED');
 }
 function loadBank(){
