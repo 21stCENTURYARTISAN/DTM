@@ -187,7 +187,7 @@ html,body{width:100vw;height:100vh;overflow:hidden;background:var(--bg);
   width:100%;height:100%;pointer-events:none;}
  
 /* ACC button */
-.sacc{cursor:pointer;font-family:var(--fh);font-size:9px;color:var(--t2);
+.sacc{cursor:pointer;font-family:var(--fh);font-size:11px;color:var(--t2);
   display:flex;align-items:center;justify-content:center;
   border:1px solid var(--b1);border-radius:1px;width:100%;}
 .sacc.on{background:#ff3d5a20;border-color:var(--kick);color:var(--kick);}
@@ -195,7 +195,7 @@ html,body{width:100vw;height:100vh;overflow:hidden;background:var(--bg);
 /* CUT display — drag/wheel only */
 .scut-wrap{display:flex;align-items:center;justify-content:center;
   cursor:ns-resize;touch-action:none;width:100%;border:1px solid var(--b1);}
-.scut{font-family:var(--fh);font-size:9px;color:var(--t2);
+.scut{font-family:var(--fh);font-size:11px;color:var(--t2);
   display:flex;align-items:center;justify-content:center;
   width:100%;height:100%;pointer-events:none;}
  
@@ -302,7 +302,7 @@ P.chordRes=0; P.chordVerb=0.15; P.chordCho=0.10;
  
 const MELODIC=new Set(['bass','chord','arp','pad','lead']);
 const OCT_KEYS={bass:'bassOct',chord:'chordOct',arp:'arpOct',pad:'padOct',lead:'leadOct'};
-const OCT={bassOct:3,chordOct:3,arpOct:4,padOct:3,leadOct:3};
+const OCT={bassOct:1,chordOct:3,arpOct:4,padOct:3,leadOct:2};
  
 /* ═══════════════════════════════════════════════════════════
    SCALE SYSTEM
