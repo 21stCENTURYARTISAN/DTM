@@ -680,6 +680,10 @@ let paintActive=false,paintVal=0;
 let ctx=null,mComp,mGain,anlzNode,anlzL,anlzR,anlzSplit,dlyNode,dlyFb,rvbNode,rvbGain;
 let recDest=null,scriptProc=null,isRecording=false,recLeft=[],recRight=[];
 let ready=false,bsSlide=55,ldSlide=110;
+// Pre-cached buffers to avoid per-trigger allocations
+let _noiseCache=null; // 1s white noise AudioBuffer, created once in startAudio
+let _hatCrushCurves={}; // keyed by crush amount (rounded)
+let _chordSatCurve=null; // static tanh(1.2) curve for chord saturation
  
 function autoClean(sources,nodes){
   // FIX #5: race-safe cleanup — disconnect after ALL sources end OR fallback timeout
@@ -848,13 +852,12 @@ async function startAudio(){
   recDest=ctx.createMediaStreamDestination();
   mGain.connect(recDest);
   scriptProc=ctx.createScriptProcessor(4096,2,2);
-  // FIX #8: avoid spread operator allocation — copy typed array with slice
   scriptProc.onaudioprocess=e=>{
     if(!isRecording)return;
     recLeft.push(e.inputBuffer.getChannelData(0).slice());
     recRight.push(e.inputBuffer.getChannelData(1).slice());
   };
-  mGain.connect(scriptProc);scriptProc.connect(ctx.destination);
+  // ScriptProcessor connected on-demand in toggleRec() to avoid idle CPU drain
   dlyNode=ctx.createDelay(2.0);dlyFb=ctx.createGain();dlyFb.gain.value=.44;
   const dH=ctx.createBiquadFilter();dH.type='highpass';dH.frequency.value=250;
   dlyNode.connect(dlyFb);dlyFb.connect(dH);dH.connect(dlyNode);dlyNode.connect(mComp);
@@ -863,6 +866,13 @@ async function startAudio(){
   rvbGain=ctx.createGain();rvbGain.gain.value=.44;
   rvbNode.connect(rvbGain);rvbGain.connect(mComp);
   await generateDrumSamples();
+  // Pre-generate shared noise buffer (1 second) to avoid per-trigger allocation
+  const _nLen=ctx.sampleRate;
+  _noiseCache=ctx.createBuffer(1,_nLen,ctx.sampleRate);
+  const _nD=_noiseCache.getChannelData(0);
+  for(let i=0;i<_nLen;i++)_nD[i]=Math.random()*2-1;
+  // Pre-generate chord saturation curve
+  {const n=256;_chordSatCurve=new Float32Array(n);for(let i=0;i<n;i++){const x=(i*2/n-1)*1.2;_chordSatCurve[i]=Math.tanh(x)/Math.tanh(1.2);}}
   ready=true;
   const ib=document.getElementById('initBtn');
   if(ib){ib.textContent='● LIVE';ib.classList.remove('on');ib.classList.add('go');ib.onclick=null;}
@@ -973,11 +983,7 @@ function trigKick(t){
   const subE=ctx.createGain();nodes.push(subE);
   subE.gain.setValueAtTime(0,t);subE.gain.linearRampToValueAtTime(P.kickSub*1.2,t+.005);
   subE.gain.exponentialRampToValueAtTime(.0001,t+dur*1.5);
-  const cl=Math.floor(ctx.sampleRate*.01);
-  const cb=ctx.createBuffer(1,cl,ctx.sampleRate);
-  const cd=cb.getChannelData(0);
-  for(let i=0;i<cl;i++)cd[i]=(Math.random()*2-1)*Math.pow(1-i/cl,4);
-  const cs=ctx.createBufferSource();cs.buffer=cb;
+  const cs=ctx.createBufferSource();cs.buffer=_noiseCache;
   const cf=ctx.createBiquadFilter();cf.type='bandpass';cf.frequency.value=5000;cf.Q.value=.4;nodes.push(cf);
   const ce=ctx.createGain();nodes.push(ce);
   ce.gain.setValueAtTime(Math.max(.0001,P.kickClick*.65),t);ce.gain.exponentialRampToValueAtTime(.0001,t+.012);
@@ -1021,19 +1027,28 @@ function trigSnare(t){
   bo.frequency.setValueAtTime(snBody,t);
   bo.frequency.exponentialRampToValueAtTime(Math.max(20,snBody*.68),t+.025);
   const be=ctx.createGain();nodes.push(be);
-  // FIX #1: ensure linear ramp target is non-zero so exponential ramp is valid
   be.gain.setValueAtTime(0,t);be.gain.linearRampToValueAtTime(.8,t+.004);
   be.gain.exponentialRampToValueAtTime(.0001,t+d);
+  // Noise layer — bandpass filtered white noise for snare body
+  const nl=Math.floor(ctx.sampleRate*(d+.1));
+  const nb=ctx.createBuffer(1,nl,ctx.sampleRate);
+  const nd=nb.getChannelData(0);for(let i=0;i<nl;i++)nd[i]=Math.random()*2-1;
+  const ns=ctx.createBufferSource();ns.buffer=nb;
+  const nf=ctx.createBiquadFilter();nf.type='bandpass';nf.frequency.value=Math.max(800,snBody*6);nf.Q.value=1.0;nodes.push(nf);
+  const ne=ctx.createGain();nodes.push(ne);
+  ne.gain.setValueAtTime(0,t);ne.gain.linearRampToValueAtTime(.65,t+.003);
+  ne.gain.exponentialRampToValueAtTime(.0001,t+d*.8);
+  ns.connect(nf);nf.connect(ne);
   const dr=mkTanh(P.snareDrive,nodes);
   // MID EQ: variable-frequency peaking EQ
   const eqM=ctx.createBiquadFilter();eqM.type='peaking';eqM.frequency.value=Math.max(200,P.snrEqF);eqM.Q.value=1.0;eqM.gain.value=(P.snrEqA||0)*18;nodes.push(eqM);
   const og=ctx.createGain();og.gain.value=P.snareAmp;nodes.push(og);
-  be.connect(dr);dr.connect(eqM);eqM.connect(og);og.connect(mComp);
+  be.connect(dr);ne.connect(dr);dr.connect(eqM);eqM.connect(og);og.connect(mComp);
   const rv=mkRvb(P.snareReverb,nodes);if(rv)eqM.connect(rv);
-  bo.start(t);bo.stop(t+d+.12);
-  autoClean([bo],nodes);
+  bo.start(t);bo.stop(t+d+.12);ns.start(t);
+  autoClean([bo,ns],nodes);
 }
- 
+
 // Hats: deg=0→16th(1 hit), deg=1→32nd(2 hits=rolls), deg=2→64th (triplet feel)
 // ACC is linked to knob 2 (O.DC) value — when ACC on, use open hat sound
 function trigHatSample(t,subdiv,isAcc){
@@ -1054,7 +1069,9 @@ function trigHatSample(t,subdiv,isAcc){
     const en=ctx.createGain();nodes.push(en);
     const hatk=Math.max(.001,P.hatAtk||.003);
     en.gain.setValueAtTime(0,tt);en.gain.linearRampToValueAtTime(Math.max(.0001,P.hatsAmp*.92),tt+hatk);en.gain.exponentialRampToValueAtTime(.0001,tt+d);
-    src.connect(bp);bp.connect(eqH);eqH.connect(en);en.connect(mComp);
+    src.connect(bp);bp.connect(eqH);eqH.connect(en);
+    const {mg:hMg,dl:hDl,out:hOut}=mkStereo(P.hatWid,P.hatPan,nodes);
+    en.connect(hMg,0,0);en.connect(hDl);hOut.connect(mComp);
     const dg=mkDly(P.hatDly,nodes);if(dg)en.connect(dg);
     const rv=mkRvb(isOpen?P.hatVerb*.5:0,nodes);if(rv)en.connect(rv);
     src.start(tt);
@@ -1074,19 +1091,20 @@ function trigHat(t,subdiv,isAcc){
     const isOpen=isAcc; // ACC = open hat
     const nodes=[];
     const d=Math.max(.005,isOpen?P.hatDecO:P.hatDecC);
-    const bl=Math.floor(ctx.sampleRate*(d+.06));
-    const buf=ctx.createBuffer(1,bl,ctx.sampleRate);
-    const bd=buf.getChannelData(0);for(let i=0;i<bl;i++)bd[i]=Math.random()*2-1;
-    const ns=ctx.createBufferSource();ns.buffer=buf;
+    const ns=ctx.createBufferSource();ns.buffer=_noiseCache;
     const bp=ctx.createBiquadFilter();bp.type='bandpass';
     bp.frequency.value=Math.max(500,P.hatTone);bp.Q.value=0.3+P.hatSpec*3.5;nodes.push(bp);
     // HIGH EQ: variable high-shelf
     const eqH=ctx.createBiquadFilter();eqH.type='highshelf';eqH.frequency.value=Math.max(2000,P.hatEqF);eqH.gain.value=(P.hatEqA||0)*18;nodes.push(eqH);
     const cg=ctx.createGain();cg.gain.value=Math.max(1,P.hatCrush);nodes.push(cg);
     const cw=ctx.createWaveShaper();nodes.push(cw);
-    const cc2=new Float32Array(256);
-    for(let i=0;i<256;i++){const x=i*2/255-1;cc2[i]=Math.max(-1,Math.min(1,x*P.hatCrush))/Math.max(1,P.hatCrush);}
-    cw.curve=cc2;
+    const crushKey=Math.round(P.hatCrush*10);
+    if(!_hatCrushCurves[crushKey]){
+      const cc2=new Float32Array(256);
+      for(let i=0;i<256;i++){const x=i*2/255-1;cc2[i]=Math.max(-1,Math.min(1,x*P.hatCrush))/Math.max(1,P.hatCrush);}
+      _hatCrushCurves[crushKey]=cc2;
+    }
+    cw.curve=_hatCrushCurves[crushKey];
     const en=ctx.createGain();nodes.push(en);
     const hatk=Math.max(.001,P.hatAtk||.003);
     en.gain.setValueAtTime(0,tt);en.gain.linearRampToValueAtTime(Math.max(.0001,P.hatsAmp*.92),tt+hatk);
@@ -1252,9 +1270,9 @@ function trigChord(t,freq,cs){
   en.gain.setValueAtTime(0,t);en.gain.linearRampToValueAtTime(P.chordAmp,t+atk);
   en.gain.exponentialRampToValueAtTime(.0001,t+atk+d);
 
-  // Saturation
+  // Saturation (uses pre-cached curve)
   const dr=ctx.createWaveShaper();nodes.push(dr);
-  {const n=256,c=new Float32Array(n);for(let i=0;i<n;i++){const x=(i*2/n-1)*1.2;c[i]=Math.tanh(x)/Math.tanh(1.2);}dr.curve=c;}
+  dr.curve=_chordSatCurve;
 
   mx.connect(dr);dr.connect(la[0]);la[3].connect(en);
 
@@ -1519,9 +1537,14 @@ function toggleRec(){
     const btn=document.getElementById('recBtn');
     if(!isRecording){
       recLeft=[];recRight=[];isRecording=true;
+      // Connect ScriptProcessor only while recording to avoid idle CPU drain
+      try{mGain.connect(scriptProc);scriptProc.connect(ctx.destination);}catch(e){}
       btn.textContent='■ REC';btn.classList.add('rec-active');setMsg('RECORDING...');
     }else{
-      isRecording=false;btn.textContent='⏺ REC';btn.classList.remove('rec-active');
+      isRecording=false;
+      // Disconnect ScriptProcessor when not recording
+      try{scriptProc.disconnect();mGain.disconnect(scriptProc);}catch(e){}
+      btn.textContent='⏺ REC';btn.classList.remove('rec-active');
       openMixdownDialog();
     }
   });
@@ -1621,7 +1644,7 @@ function exportWAV(name,tags){
   let o=0;
   function ws(s){for(let i=0;i<s.length;i++)v.setUint8(o++,s.charCodeAt(i));}
   function w32(n){v.setUint32(o,n,true);o+=4;}
-  function w16(n){v.setUint16(o,n,true);o+=2;}
+  function w16(n){v.setInt16(o,n,true);o+=2;}
 
   ws('RIFF');w32(fileSize);ws('WAVE');
   ws('fmt ');w32(16);w16(1);w16(nCh);w32(sr);w32(sr*blockAlign);w16(blockAlign);w16(bps);
@@ -1697,7 +1720,20 @@ function buildID3v2(tags){
   addText('TYER',tags.year);     // ID3v2.3 year
   addText('TCON',tags.genre);
   addText('TRCK',tags.track);
-  addText('COMM',tags.comment);
+  // COMM frame requires special structure (lang+desc+text); use TXXX for comment instead
+  if(tags.comment){
+    const enc=new TextEncoder().encode(tags.comment);
+    // TXXX: encoding(0) + description(\0) + value
+    const desc=new TextEncoder().encode('COMMENT\0');
+    const size=1+desc.length+enc.length;
+    const frame=new Uint8Array(10+size);
+    for(let i=0;i<4;i++)frame[i]='TXXX'.charCodeAt(i);
+    frame[4]=(size>>24)&0xff;frame[5]=(size>>16)&0xff;
+    frame[6]=(size>>8)&0xff;frame[7]=size&0xff;
+    frame[10]=0; // encoding: ISO-8859-1
+    frame.set(desc,11);frame.set(enc,11+desc.length);
+    frames.push(frame);
+  }
   addText('TSSE','GUR-V1 Deep Techno Machine');
 
   let totalFrameSize=0;
@@ -1806,6 +1842,7 @@ function showPop(lbl,val,col,el){
 }
  
 let uiRefresh=[];
+let seqRefresh=[]; // separate array for seq-rebuild callbacks (cleared on rebuild)
 
 /* ═══════════════════════════════════════════════════════════
    CANVAS KNOB — 3D rendered, theme-aware, pointer capture
@@ -2222,7 +2259,7 @@ function setTheme(name){
   // Update channel strip --cc colors
   chDivEls.forEach((el,ci)=>{if(el)el.style.setProperty('--cc',CH[ci].c);});
   // Redraw all knobs + UI
-  uiRefresh.forEach(fn=>fn());
+  uiRefresh.forEach(fn=>fn());seqRefresh.forEach(fn=>fn());
   // Update theme buttons
   document.querySelectorAll('.theme-btn').forEach(b=>{
     b.classList.toggle('active',b.dataset.theme===name);
@@ -2281,6 +2318,8 @@ function buildTopNums(){
 
 // ── Analyzer overlays ──────────────────────────────────────────────
 let anlzRAF={freq:null,scope:null};
+// Pre-allocated analyzer buffers (created once on first use)
+let _freqBuf=null,_scopeBufL=null,_scopeBufR=null;
 function toggleAnlz(){
   if(!anlzNode){alert('Initialize audio first (press INIT)');return;}
   const ov=document.getElementById('anlzOverlay');
@@ -2297,8 +2336,9 @@ function drawFreq(){
   const W=cv.clientWidth,H=cv.clientHeight;
   if(cv.width!==W||cv.height!==H){cv.width=W;cv.height=H;}
   const g=cv.getContext('2d');
-  const buf=new Uint8Array(anlzNode.frequencyBinCount);
-  anlzNode.getByteFrequencyData(buf);
+  if(!_freqBuf||_freqBuf.length!==anlzNode.frequencyBinCount)_freqBuf=new Uint8Array(anlzNode.frequencyBinCount);
+  anlzNode.getByteFrequencyData(_freqBuf);
+  const buf=_freqBuf;
   const fMin=25,fMax=25600;
   const nyq=ctx.sampleRate/2;
   const fftSz=anlzNode.fftSize;
@@ -2343,8 +2383,9 @@ function drawVector(){
   if(cv.width!==W||cv.height!==H){cv.width=W;cv.height=H;}
   const g=cv.getContext('2d');
   if(!anlzL||!anlzR){anlzRAF.scope=requestAnimationFrame(drawVector);return;}
-  const bufL=new Float32Array(anlzL.fftSize);
-  const bufR=new Float32Array(anlzR.fftSize);
+  if(!_scopeBufL||_scopeBufL.length!==anlzL.fftSize)_scopeBufL=new Float32Array(anlzL.fftSize);
+  if(!_scopeBufR||_scopeBufR.length!==anlzR.fftSize)_scopeBufR=new Float32Array(anlzR.fftSize);
+  const bufL=_scopeBufL,bufR=_scopeBufR;
   anlzL.getFloatTimeDomainData(bufL);
   anlzR.getFloatTimeDomainData(bufR);
   // Phosphor persistence: fade with theme background
@@ -2388,6 +2429,7 @@ document.addEventListener('DOMContentLoaded',()=>{
 
 function buildSeqRows(){
   sonToCell.clear();
+  seqRefresh=[]; // clear stale seq callbacks
   const wrap=document.getElementById('seqRows');wrap.innerHTML='';
   const prevP=stepCells.map(r=>r?r._p:null);
   stepCells=[];
@@ -2419,7 +2461,7 @@ function buildSeqRows(){
     row.appendChild(lenWrap);
     lenUp.addEventListener('click',()=>{chLen[ci]=Math.min(32,chLen[ci]+1);lenNum.textContent=chLen[ci];refreshLenMarkers(ci);});
     lenDn.addEventListener('click',()=>{chLen[ci]=Math.max(1,chLen[ci]-1);lenNum.textContent=chLen[ci];refreshLenMarkers(ci);});
-    uiRefresh.push(()=>{lenNum.textContent=chLen[ci];});
+    seqRefresh.push(()=>{lenNum.textContent=chLen[ci];});
 
     for(let s=0;s<seqLen;s++){
       const past=s>=chLen[ci],lend=s===chLen[ci]-1;
@@ -2606,6 +2648,8 @@ function snapshotCurrent(){
 }
 function restoreSnapshot(snap){
   if(!snap)return;
+  // Reset portamento slides so first note doesn't glide from stale frequency
+  bsSlide=55;ldSlide=110;
   Object.assign(seqState,JSON.parse(JSON.stringify(snap.seq)));
   snap.len.forEach((l,ci)=>{chLen[ci]=l;});
   if(snap.scale&&SCALES[snap.scale])scaleKey=snap.scale;
@@ -2694,7 +2738,7 @@ function loadPat(i){
   });
   
   // Refresh UI elements
-  uiRefresh.forEach(fn=>fn());
+  uiRefresh.forEach(fn=>fn());seqRefresh.forEach(fn=>fn());
   updateMuteVis();
 
   buildTopNums();buildSeqRows();
@@ -2792,20 +2836,28 @@ let masterMute=false, masterSolo=false;
 (function(){
   const mvWrap=document.getElementById('masterVolWrap');
   const mvKnob=makeKnob(mvWrap,'MASTER','masterVol',0,1,.8,0,24,'#888');
-  // Sync master vol to audio gain
-  setInterval(()=>{if(mGain)mGain.gain.value=masterMute?0:P.masterVol;},100);
+  // Sync master vol to audio gain — smooth ramp to avoid zipper noise
+  let _lastMVol=-1,_lastMMute=false;
+  setInterval(()=>{
+    if(!mGain)return;
+    const target=masterMute?0:P.masterVol;
+    if(target!==_lastMVol||masterMute!==_lastMMute){
+      _lastMVol=target;_lastMMute=masterMute;
+      mGain.gain.setTargetAtTime(target,ctx.currentTime,0.02);
+    }
+  },50);
 })();
 document.getElementById('masterMuteBtn').addEventListener('click',()=>{
   masterMute=!masterMute;
   document.getElementById('masterMuteBtn').classList.toggle('mute-on',masterMute);
-  if(mGain)mGain.gain.value=masterMute?0:P.masterVol;
+  if(mGain)mGain.gain.setTargetAtTime(masterMute?0:P.masterVol,ctx.currentTime,0.02);
 });
 document.getElementById('masterSoloBtn').addEventListener('click',()=>{
   // Clear all channel solos
   soloState.fill(false);
   document.getElementById('masterSoloBtn').classList.add('solo-on');
   setTimeout(()=>document.getElementById('masterSoloBtn').classList.remove('solo-on'),200);
-  uiRefresh.forEach(fn=>fn());
+  uiRefresh.forEach(fn=>fn());seqRefresh.forEach(fn=>fn());
   updateMuteVis();
 });
 buildTopNums();
